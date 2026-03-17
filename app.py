@@ -43,7 +43,7 @@ def get_spreadsheet():
     """Abre a planilha principal (substitua pela sua URL ou ID)."""
     client = get_gspread_client()
     # Coloque aqui o ID da sua planilha (extraído da URL)
-    SPREADSHEET_ID = "SEU_ID_AQUI"
+    SPREADSHEET_ID = "1BxiMVs0XRA5nFMdKvBdBZjgmUUqptlbs74OgvE2upms"
     return client.open_by_key(SPREADSHEET_ID)
 
 # Funções auxiliares para acessar as abas
