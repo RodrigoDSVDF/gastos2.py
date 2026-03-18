@@ -130,6 +130,17 @@ def load_user_data(email):
     # Busca gastos na planilha gastos filtrando por email
     try:
         ws_gastos = get_gastos_worksheet()
+        
+        # --- Verificação adicional: cabeçalhos esperados ---
+        headers = ws_gastos.row_values(1)
+        expected_headers = ["email", "id", "descricao", "categoria", "valor", "data", "forma_pagamento", "timestamp"]
+        missing = [h for h in expected_headers if h not in headers]
+        if missing:
+            st.warning(f"⚠️ A planilha 'gastos' pode estar com formatação incorreta. "
+                       f"Cabeçalhos ausentes/divergentes: {missing}. "
+                       f"Verifique se a primeira linha contém exatamente: {expected_headers}")
+        # ----------------------------------------------------
+
         todos_gastos = ws_gastos.get_all_records()
         
         gastos_usuario = []
@@ -295,7 +306,21 @@ if not st.session_state.authenticated:
                         st.session_state.dados_carregados = False  # Forçar recarregamento
                         st.rerun()
                     else:
-                        st.error("❌ E-mail não autorizado.")
+                        # Mensagem amigável com botão de checkout
+                        st.markdown("""
+                        <div style="background: rgba(239, 68, 68, 0.1); border: 1px solid #ef4444; border-radius: 15px; padding: 1.5rem; text-align: center; margin-top: 1rem;">
+                            <p style="color: #ef4444; font-size: 1.1rem; font-weight: 600;">❌ E‑mail não encontrado</p>
+                            <p style="color: #94a3b8; margin: 0.5rem 0;">Parece que você ainda não tem acesso.</p>
+                            <p style="color: #94a3b8;">Assine agora por apenas <strong style="color: #10b981;">R$ 10,99/mês</strong> e tenha o controle financeiro completo!</p>
+                        </div>
+                        """, unsafe_allow_html=True)
+                        st.markdown(f"""
+                        <a href="{CHECKOUT_URL}" target="_blank" style="text-decoration: none;">
+                            <div style="background: linear-gradient(135deg, #10b981, #059669); color: white; padding: 0.75rem; border-radius: 12px; text-align: center; font-weight: 600; margin-top: 1rem; box-shadow: 0 4px 15px rgba(16, 185, 129, 0.4);">
+                                💳 ASSINAR AGORA
+                            </div>
+                        </a>
+                        """, unsafe_allow_html=True)
             else:
                 st.warning("⚠️ Digite seu e-mail.")
     
@@ -430,8 +455,8 @@ def formatar_data_br(data_str):
         return data_str.strftime('%d/%m/%Y')
     return data_str
 
-# ==================== HEADER COM BOTÃO DE LOGOUT ====================
-col_logo, col_logout = st.columns([6,1])
+# ==================== HEADER COM BOTÃO DE LOGOUT E RECARREGAR ====================
+col_logo, col_logout, col_reload = st.columns([6,1,1])
 with col_logo:
     st.markdown("""
     <div class="dashboard-header animate-in" style="margin-top: -1rem;">
@@ -446,6 +471,11 @@ with col_logout:
         st.session_state.email = None
         st.session_state.dados = {"renda_mensal": 0, "gastos": []}
         st.session_state.dados_carregados = False
+        st.rerun()
+with col_reload:
+    st.markdown("<br><br>", unsafe_allow_html=True)
+    if st.button("🔄 Recarregar", use_container_width=True):
+        st.session_state.dados_carregados = False   # força recarregamento na próxima execução
         st.rerun()
 
 # ==================== MENU SUPERIOR COM ABAS ====================
