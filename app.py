@@ -15,8 +15,78 @@ st.set_page_config(
     initial_sidebar_state="collapsed"
 )
 
+# ==================== SISTEMA DE CACHE INTELIGENTE ====================
+class SheetsCache:
+    """Gerenciador de cache inteligente para Google Sheets."""
+    
+    def __init__(self, default_ttl=30):
+        self.cache = {}
+        self.default_ttl = default_ttl
+        self.stats = {"hits": 0, "misses": 0}
+    
+    def get(self, key, fetch_function, ttl=None):
+        """Busca do cache com fallback para função de fetch."""
+        current_time = time.time()
+        ttl = ttl or self.default_ttl
+        
+        if key in self.cache:
+            entry = self.cache[key]
+            if current_time - entry["timestamp"] < ttl:
+                self.stats["hits"] += 1
+                return entry["data"]
+        
+        # Cache miss - busca dados novos
+        self.stats["misses"] += 1
+        data = fetch_function()
+        
+        self.cache[key] = {
+            "data": data,
+            "timestamp": current_time
+        }
+        
+        # Limpa caches antigos a cada 100 misses
+        if self.stats["misses"] % 100 == 0:
+            self._clean_old_entries()
+        
+        return data
+    
+    def invalidate(self, key_pattern=None):
+        """Invalida cache parcial ou total."""
+        if key_pattern is None:
+            self.cache.clear()
+            self.stats = {"hits": 0, "misses": 0}
+        else:
+            keys_to_delete = [k for k in self.cache if key_pattern in k]
+            for k in keys_to_delete:
+                del self.cache[k]
+    
+    def _clean_old_entries(self, max_age=300):  # 5 minutos
+        """Remove entradas antigas do cache."""
+        current_time = time.time()
+        keys_to_delete = [
+            k for k, v in self.cache.items()
+            if current_time - v["timestamp"] > max_age
+        ]
+        for k in keys_to_delete:
+            del self.cache[k]
+    
+    def get_stats(self):
+        """Retorna estatísticas do cache."""
+        total = self.stats["hits"] + self.stats["misses"]
+        hit_ratio = self.stats["hits"] / total if total > 0 else 0
+        return {
+            "hits": self.stats["hits"],
+            "misses": self.stats["misses"],
+            "hit_ratio": hit_ratio,
+            "cache_size": len(self.cache)
+        }
+
+# Inicializa o cache global
+_sheets_cache = SheetsCache(default_ttl=30)
+
 # -------------------- GOOGLE SHEETS INTEGRAÇÃO --------------------
 def get_gspread_client():
+    """Retorna cliente autenticado do gspread usando service account."""
     creds_dict = st.secrets["gcp_service_account"]
     scope = [
         "https://spreadsheets.google.com/feeds",
@@ -26,35 +96,41 @@ def get_gspread_client():
     creds = Credentials.from_service_account_info(creds_dict, scopes=scope)
     return gspread.authorize(creds)
 
-# ❌ CACHE REMOVIDO – sempre abrimos a planilha novamente
+# Cache para a planilha principal (TTL maior - 5 minutos)
 def get_spreadsheet():
-    try:
+    """Abre a planilha principal com cache de 5 minutos."""
+    def _fetch_spreadsheet():
         client = get_gspread_client()
         SPREADSHEET_ID = "1b7QQ2n59e_GCijiWmTrKBeq7-FnXgVttx9l96uuIs0I"
         return client.open_by_key(SPREADSHEET_ID)
-    except Exception as e:
-        st.error(f"❌ Erro ao conectar com Google Sheets: {str(e)}")
-        st.stop()
+    
+    return _sheets_cache.get("spreadsheet", _fetch_spreadsheet, ttl=300)
 
 def get_usuarios_worksheet():
+    """Retorna a worksheet de usuários com verificação."""
     try:
         spreadsheet = get_spreadsheet()
         all_worksheets = [ws.title for ws in spreadsheet.worksheets()]
+        
         if "usuarios" not in all_worksheets:
             st.error(f"❌ Aba 'usuarios' não encontrada! Abas disponíveis: {all_worksheets}")
             st.stop()
+        
         return spreadsheet.worksheet("usuarios")
     except Exception as e:
         st.error(f"Erro ao acessar aba 'usuarios': {str(e)}")
         st.stop()
 
 def get_gastos_worksheet():
+    """Retorna a worksheet de gastos com verificação."""
     try:
         spreadsheet = get_spreadsheet()
         all_worksheets = [ws.title for ws in spreadsheet.worksheets()]
+        
         if "gastos" not in all_worksheets:
             st.error(f"❌ Aba 'gastos' não encontrada! Abas disponíveis: {all_worksheets}")
             st.stop()
+        
         return spreadsheet.worksheet("gastos")
     except Exception as e:
         st.error(f"Erro ao acessar aba 'gastos': {str(e)}")
@@ -162,18 +238,34 @@ def load_user_data(email):
         st.error(f"Erro ao carregar gastos: {str(e)}")
         return renda, []
 
-def save_renda(email, nova_renda):
+# Versões com cache das funções principais
+def get_user_data_cached(email):
+    """Versão otimizada de load_user_data com cache."""
+    cache_key = f"user_data_{email}"
+    
+    def _fetch():
+        return load_user_data(email)
+    
+    return _sheets_cache.get(cache_key, _fetch, ttl=30)
+
+def save_renda_cached(email, nova_renda):
+    """Versão otimizada que invalida cache após salvar."""
     user_info = check_user(email)
     if user_info:
         ws = get_usuarios_worksheet()
         indices = mapear_indices(ws, ["email", "renda_mensal"])
         ws.update_cell(user_info["row"], indices["renda_mensal"] + 1, float(nova_renda))
         st.session_state.dados["renda_mensal"] = nova_renda
+        
+        # Invalida caches relacionados
+        _sheets_cache.invalidate(f"user_data_{email}")
+        _sheets_cache.invalidate("worksheet_usuarios")
         return True
     st.error("Usuário não encontrado.")
     return False
 
-def add_gasto(email, gasto):
+def add_gasto_cached(email, gasto):
+    """Versão otimizada que invalida cache após adicionar."""
     try:
         ws_gastos = get_gastos_worksheet()
         expected = ["email", "id", "descricao", "categoria", "valor", "data", "forma_pagamento", "timestamp"]
@@ -194,12 +286,17 @@ def add_gasto(email, gasto):
         ws_gastos.append_row(nova_linha)
         gasto['id'] = gasto_id
         st.session_state.dados['gastos'].append(gasto)
+        
+        # Invalida caches relacionados
+        _sheets_cache.invalidate(f"user_data_{email}")
+        _sheets_cache.invalidate("worksheet_gastos")
         return gasto_id
     except Exception as e:
         st.error(f"Erro ao adicionar gasto: {str(e)}")
         return None
 
-def delete_all_user_data(email):
+def delete_all_user_data_cached(email):
+    """Versão otimizada que invalida cache após deletar."""
     try:
         # Deletar gastos
         ws_gastos = get_gastos_worksheet()
@@ -224,7 +321,11 @@ def delete_all_user_data(email):
             ws_usuarios.update_cell(user_info["row"], indices_user["renda_mensal"] + 1, 0)
             st.session_state.dados['renda_mensal'] = 0
             st.session_state.dados['gastos'] = []
-
+        
+        # Invalida caches relacionados
+        _sheets_cache.invalidate(f"user_data_{email}")
+        _sheets_cache.invalidate("worksheet_usuarios")
+        _sheets_cache.invalidate("worksheet_gastos")
         return True
     except Exception as e:
         st.error(f"Erro ao limpar dados: {str(e)}")
@@ -243,10 +344,12 @@ if "ultima_acao" not in st.session_state:
     st.session_state.ultima_acao = None
 if "login_error" not in st.session_state:
     st.session_state.login_error = None
+if "show_cache_stats" not in st.session_state:
+    st.session_state.show_cache_stats = False
 
 CHECKOUT_URL = "https://pay.cakto.com.br/xxienb8_809928"
 
-# -------------------- VERIFICAÇÃO INICIAL (SEM AVISOS) --------------------
+# -------------------- VERIFICAÇÃO INICIAL --------------------
 try:
     sheet = get_spreadsheet()
     worksheets = sheet.worksheets()
@@ -334,9 +437,9 @@ if not st.session_state.authenticated:
         st.markdown("</div>", unsafe_allow_html=True)
     st.stop()
 
-# -------------------- APÓS LOGIN: CARREGA DADOS SEMPRE --------------------
+# -------------------- APÓS LOGIN: CARREGA DADOS COM CACHE --------------------
 with st.spinner("Carregando seus dados..."):
-    renda, gastos = load_user_data(st.session_state.email)
+    renda, gastos = get_user_data_cached(st.session_state.email)
     st.session_state.dados["renda_mensal"] = renda
     st.session_state.dados["gastos"] = gastos
 
@@ -438,8 +541,27 @@ def formatar_data_br(data_str):
         return data_str.strftime('%d/%m/%Y')
     return data_str
 
-# ==================== HEADER COM BOTÕES DE LOGOUT E RECARREGAR ====================
-col_logo, col_reload, col_logout = st.columns([6, 1, 1])
+def show_cache_stats():
+    """Mostra estatísticas do cache em um expander."""
+    stats = _sheets_cache.get_stats()
+    with st.expander("📊 Estatísticas de Cache", expanded=False):
+        col1, col2, col3, col4 = st.columns(4)
+        with col1:
+            st.metric("Cache Hits", stats["hits"])
+        with col2:
+            st.metric("Cache Misses", stats["misses"])
+        with col3:
+            st.metric("Hit Ratio", f"{stats['hit_ratio']:.1%}")
+        with col4:
+            st.metric("Entradas", stats["cache_size"])
+        
+        if st.button("🧹 Limpar Cache", use_container_width=True):
+            _sheets_cache.invalidate()
+            st.success("Cache limpo com sucesso!")
+            st.rerun()
+
+# ==================== HEADER COM BOTÕES DE LOGOUT, RECARREGAR E CACHE ====================
+col_logo, col_reload, col_cache, col_logout = st.columns([5, 1, 1, 1])
 with col_logo:
     st.markdown("""
     <div class="dashboard-header animate-in" style="margin-top: -1rem;">
@@ -450,15 +572,26 @@ with col_logo:
 with col_reload:
     st.markdown("<br><br>", unsafe_allow_html=True)
     if st.button("🔄 Recarregar", use_container_width=True):
+        _sheets_cache.invalidate(f"user_data_{st.session_state.email}")
+        st.rerun()
+with col_cache:
+    st.markdown("<br><br>", unsafe_allow_html=True)
+    if st.button("📊 Cache", use_container_width=True):
+        st.session_state.show_cache_stats = not st.session_state.show_cache_stats
         st.rerun()
 with col_logout:
     st.markdown("<br><br>", unsafe_allow_html=True)
     if st.button("🚪 Sair", use_container_width=True):
+        _sheets_cache.invalidate()  # Limpa todo cache ao sair
         st.session_state.authenticated = False
         st.session_state.email = None
         st.session_state.dados = {"renda_mensal": 0, "gastos": []}
         st.session_state.login_error = None
         st.rerun()
+
+# Mostra estatísticas de cache se ativado
+if st.session_state.show_cache_stats:
+    show_cache_stats()
 
 # ==================== MENU SUPERIOR COM ABAS ====================
 tab1, tab2, tab3, tab4 = st.tabs(["📊 Visão Geral", "💰 Adicionar Renda", "💳 Adicionar Gasto", "📋 Relatório Detalhado"])
@@ -783,7 +916,7 @@ with tab2:
         if st.button("💾 Salvar Renda", use_container_width=True, type="primary"):
             if renda_input >= 0:
                 with st.spinner("Salvando renda..."):
-                    if save_renda(st.session_state.email, renda_input):
+                    if save_renda_cached(st.session_state.email, renda_input):
                         notificar_sucesso(
                             f"Renda de R$ {renda_input:,.2f} registrada",
                             f"Fonte: {fonte_renda} | Saldo atualizado"
@@ -912,7 +1045,7 @@ with tab3:
                     'forma_pagamento': forma_pagamento,
                     'timestamp': datetime.now().isoformat()
                 }
-                gasto_id = add_gasto(st.session_state.email, novo_gasto)
+                gasto_id = add_gasto_cached(st.session_state.email, novo_gasto)
                 if gasto_id:
                     notificar_sucesso(
                         f"Gasto de R$ {valor_gasto:,.2f} registrado",
@@ -1079,7 +1212,7 @@ with tab4:
             with col_conf1:
                 if st.button("✅ Sim, limpar tudo", use_container_width=True):
                     with st.spinner("Limpando dados..."):
-                        if delete_all_user_data(st.session_state.email):
+                        if delete_all_user_data_cached(st.session_state.email):
                             notificar_sucesso("Todos os dados foram removidos", "Sistema resetado com sucesso")
                         else:
                             notificar_erro("Erro ao limpar dados", "Tente novamente mais tarde")
