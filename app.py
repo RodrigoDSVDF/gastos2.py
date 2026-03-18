@@ -285,7 +285,7 @@ if not st.session_state.authenticated:
                     st.session_state.dados["renda_mensal"] = renda
                     st.session_state.dados["gastos"] = gastos
                     st.success("Login realizado com sucesso!")
-                    st.experimental_rerun()
+                    st.rerun()  # ALTERADO: experimental_rerun -> rerun
                 else:
                     st.error("❌ E-mail não autorizado. Entre em contato para liberar acesso.")
         else:
@@ -296,7 +296,7 @@ if not st.session_state.authenticated:
 
 # -------------------- SE AUTENTICADO, MOSTRA O APP --------------------
 
-# ==================== CSS (mantido igual ao original) ====================
+# ==================== CSS (igual ao original) ====================
 st.markdown("""
 <style>
     @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap');
@@ -409,7 +409,7 @@ with col_logout:
         st.session_state.authenticated = False
         st.session_state.email = None
         st.session_state.dados = {"renda_mensal": 0, "gastos": []}
-        st.experimental_rerun()
+        st.rerun()  # ALTERADO: experimental_rerun -> rerun
 
 # ==================== MENU SUPERIOR COM ABAS ====================
 tab1, tab2, tab3, tab4 = st.tabs(["📊 Visão Geral", "💰 Adicionar Renda", "💳 Adicionar Gasto", "📋 Relatório Detalhado"])
@@ -880,7 +880,7 @@ with tab3:
             notificar_erro("Preencha todos os campos obrigatórios", "Descrição e valor são necessários")
     if limpar_click:
         notificar_info("Formulário limpo")
-        st.experimental_rerun()
+        st.rerun()  # ALTERADO: experimental_rerun -> rerun
     st.markdown('</div>', unsafe_allow_html=True)
 
 # ==================== ABA 4: RELATÓRIO DETALHADO ====================
@@ -1043,12 +1043,12 @@ with tab4:
                             notificar_erro("Erro ao limpar dados", "Tente novamente mais tarde")
                     st.session_state.confirmar_limpeza = False
                     time.sleep(1)
-                    st.experimental_rerun()
+                    st.rerun()  # ALTERADO: experimental_rerun -> rerun
             with col_conf2:
                 if st.button("❌ Cancelar", use_container_width=True):
                     st.session_state.confirmar_limpeza = False
                     notificar_info("Operação cancelada")
-                    st.experimental_rerun()
+                    st.rerun()  # ALTERADO: experimental_rerun -> rerun
     else:
         st.info("ℹ️ Nenhum gasto registrado ainda. Adicione gastos para gerar o relatório completo.")
     st.markdown('</div>', unsafe_allow_html=True)
