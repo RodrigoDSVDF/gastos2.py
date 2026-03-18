@@ -169,6 +169,8 @@ def save_renda(email, nova_renda):
         ws = get_usuarios_worksheet()
         # Garantir que o valor seja salvo como número
         ws.update(f"B{user_info['row']}", [[float(nova_renda)]])  # coluna B = renda_mensal
+        # Atualizar sessão
+        st.session_state.dados["renda_mensal"] = nova_renda
         return True
     else:
         st.error("Usuário não encontrado na base autorizada.")
@@ -191,6 +193,11 @@ def add_gasto(email, gasto):
             gasto["timestamp"]
         ]
         ws.append_row(novaLinha)
+        
+        # Adicionar à sessão
+        gasto['id'] = gasto_id
+        st.session_state.dados['gastos'].append(gasto)
+        
         return gasto_id
     except Exception as e:
         st.error(f"Erro ao adicionar gasto: {str(e)}")
@@ -220,6 +227,10 @@ def delete_all_user_data(email):
         if user_info:
             ws_usuarios = get_usuarios_worksheet()
             ws_usuarios.update(f"B{user_info['row']}", [[0]])
+            
+            # Atualizar sessão
+            st.session_state.dados['renda_mensal'] = 0
+            st.session_state.dados['gastos'] = []
         
         return True
     except Exception as e:
@@ -257,37 +268,67 @@ if "authenticated" not in st.session_state:
     st.session_state.dados = {"renda_mensal": 0, "gastos": []}
     st.session_state.confirmar_limpeza = False
     st.session_state.ultima_acao = None
+    st.session_state.dados_carregados = False  # Novo controle
+
+# LINK DE CHECKOUT
+CHECKOUT_URL = "https://pay.cakto.com.br/xxienb8_809928"
 
 # Se não estiver autenticado, mostra tela de login
 if not st.session_state.authenticated:
     st.markdown("""
     <div style="display: flex; justify-content: center; align-items: center; min-height: 80vh;">
-        <div style="background: linear-gradient(145deg, #1e293b, #0f172a); padding: 3rem; border-radius: 30px; border: 1px solid #8b5cf6; width: 100%; max-width: 400px;">
+        <div style="background: linear-gradient(145deg, #1e293b, #0f172a); padding: 3rem; border-radius: 30px; border: 1px solid #8b5cf6; width: 100%; max-width: 450px;">
             <h2 style="color: white; text-align: center; margin-bottom: 2rem;">🔐 Acesso Restrito</h2>
     """, unsafe_allow_html=True)
     
     email = st.text_input("Seu e-mail cadastrado", placeholder="email@exemplo.com")
     
-    if st.button("Entrar", use_container_width=True):
-        if email:
-            with st.spinner("Verificando credenciais..."):
-                user = check_user(email)
-                if user:
-                    st.session_state.authenticated = True
-                    st.session_state.email = email
-                    # Carrega os dados do usuário
-                    renda, gastos = load_user_data(email)
-                    st.session_state.dados["renda_mensal"] = renda
-                    st.session_state.dados["gastos"] = gastos
-                    st.success("Login realizado com sucesso!")
-                    st.rerun()
-                else:
-                    st.error("❌ E-mail não autorizado. Entre em contato para liberar acesso.")
-        else:
-            st.warning("⚠️ Digite seu e-mail.")
+    col1, col2 = st.columns(2)
+    with col1:
+        if st.button("Entrar", use_container_width=True, type="primary"):
+            if email:
+                with st.spinner("Verificando credenciais..."):
+                    user = check_user(email)
+                    if user:
+                        st.session_state.authenticated = True
+                        st.session_state.email = email
+                        st.session_state.dados_carregados = False  # Forçar recarregamento
+                        st.rerun()
+                    else:
+                        st.error("❌ E-mail não autorizado.")
+            else:
+                st.warning("⚠️ Digite seu e-mail.")
+    
+    with col2:
+        st.markdown(f"""
+        <a href="{CHECKOUT_URL}" target="_blank" style="text-decoration: none;">
+            <div style="background: linear-gradient(135deg, #10b981, #059669); color: white; padding: 0.6rem; border-radius: 12px; text-align: center; font-weight: 600; font-size: 0.9rem; box-shadow: 0 4px 15px rgba(16, 185, 129, 0.4);">
+                💳 ASSINAR AGORA
+            </div>
+        </a>
+        """, unsafe_allow_html=True)
+    
+    st.markdown("""
+    <div style="margin-top: 2rem; padding: 1rem; background: rgba(139, 92, 246, 0.1); border-radius: 12px; border: 1px solid rgba(139, 92, 246, 0.3); text-align: center;">
+        <p style="color: #94a3b8; margin: 0; font-size: 0.9rem;">
+            ⚡ <strong>Não tem acesso?</strong> Assine por apenas <span style="color: #10b981; font-weight: 700;">R$ 10,99/mês</span>
+        </p>
+        <p style="color: #64748b; margin: 0.5rem 0 0 0; font-size: 0.8rem;">
+            Após a assinatura, seu e-mail será liberado em até 24h.
+        </p>
+    </div>
+    """, unsafe_allow_html=True)
     
     st.markdown("</div></div>", unsafe_allow_html=True)
     st.stop()
+
+# Se estiver autenticado mas dados não carregados, carrega
+if st.session_state.authenticated and not st.session_state.get('dados_carregados', False):
+    with st.spinner("Carregando seus dados..."):
+        renda, gastos = load_user_data(st.session_state.email)
+        st.session_state.dados["renda_mensal"] = renda
+        st.session_state.dados["gastos"] = gastos
+        st.session_state.dados_carregados = True
 
 # -------------------- SE AUTENTICADO, MOSTRA O APP --------------------
 
@@ -404,6 +445,7 @@ with col_logout:
         st.session_state.authenticated = False
         st.session_state.email = None
         st.session_state.dados = {"renda_mensal": 0, "gastos": []}
+        st.session_state.dados_carregados = False
         st.rerun()
 
 # ==================== MENU SUPERIOR COM ABAS ====================
@@ -730,7 +772,6 @@ with tab2:
             if renda_input >= 0:
                 with st.spinner("Salvando renda..."):
                     if save_renda(st.session_state.email, renda_input):
-                        st.session_state.dados['renda_mensal'] = renda_input
                         notificar_sucesso(
                             f"Renda de R$ {renda_input:,.2f} registrada",
                             f"Fonte: {fonte_renda} | Saldo atualizado"
@@ -862,9 +903,6 @@ with tab3:
                 # Salvar na planilha
                 gasto_id = add_gasto(st.session_state.email, novo_gasto)
                 if gasto_id:
-                    # Adicionar id ao dicionário e incluir na sessão
-                    novo_gasto['id'] = gasto_id
-                    st.session_state.dados['gastos'].append(novo_gasto)
                     notificar_sucesso(
                         f"Gasto de R$ {valor_gasto:,.2f} registrado",
                         f"{cat_selecionada} • {forma_pagamento}"
@@ -1031,8 +1069,6 @@ with tab4:
                 if st.button("✅ Sim, limpar tudo", use_container_width=True):
                     with st.spinner("Limpando dados..."):
                         if delete_all_user_data(st.session_state.email):
-                            # Atualizar sessão
-                            st.session_state.dados = {'renda_mensal': 0, 'gastos': []}
                             notificar_sucesso("Todos os dados foram removidos", "Sistema resetado com sucesso")
                         else:
                             notificar_erro("Erro ao limpar dados", "Tente novamente mais tarde")
