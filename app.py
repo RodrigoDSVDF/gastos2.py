@@ -26,7 +26,6 @@ def get_gspread_client():
     creds = Credentials.from_service_account_info(creds_dict, scopes=scope)
     return gspread.authorize(creds)
 
-# ⚠️ NENHUM CACHE AQUI – sempre abrimos a planilha novamente
 def get_spreadsheet():
     try:
         client = get_gspread_client()
@@ -60,6 +59,27 @@ def get_gastos_worksheet():
         st.error(f"Erro ao acessar aba 'gastos': {str(e)}")
         st.stop()
 
+def normalizar_cabecalhos(linha):
+    """Converte lista de cabeçalhos para minúsculas e sem espaços."""
+    return [str(celula).strip().lower() for celula in linha]
+
+def mapear_indices(worksheet, colunas_esperadas):
+    """
+    Retorna um dicionário {nome_coluna: indice} baseado nos cabeçalhos da worksheet.
+    Se alguma coluna obrigatória não for encontrada, exibe erro e interrompe.
+    """
+    cabecalhos = worksheet.row_values(1)
+    cab_norm = normalizar_cabecalhos(cabecalhos)
+    indices = {}
+    for col in colunas_esperadas:
+        try:
+            indices[col] = cab_norm.index(col)
+        except ValueError:
+            st.error(f"❌ Coluna obrigatória '{col}' não encontrada na planilha. "
+                     f"Cabeçalhos encontrados: {cabecalhos}")
+            st.stop()
+    return indices
+
 def check_user(email):
     """Verifica se o email existe na planilha de usuários (case‑insensitive)."""
     try:
@@ -69,16 +89,15 @@ def check_user(email):
             return None
 
         headers = all_rows[0]
-        expected_headers = ["email", "renda_mensal"]
-        for i, expected in enumerate(expected_headers):
-            if i >= len(headers) or headers[i].lower().strip() != expected.lower():
-                st.error(f"Cabeçalho incorreto na coluna {i+1}. Esperado: '{expected}'")
-                return None
+        expected = ["email", "renda_mensal"]
+        indices = mapear_indices(ws, expected)  # reutiliza a função, mas adaptada
 
         email_clean = email.lower().strip()
         for i, row in enumerate(all_rows[1:], start=2):
-            if len(row) >= 1 and row[0].lower().strip() == email_clean:
-                renda_valor = row[1] if len(row) > 1 and row[1].strip() else "0"
+            if len(row) <= indices["email"]:
+                continue
+            if row[indices["email"]].lower().strip() == email_clean:
+                renda_valor = row[indices["renda_mensal"]] if len(row) > indices["renda_mensal"] else "0"
                 renda_valor = renda_valor.replace("R$", "").replace(" ", "").replace(".", "").replace(",", ".").strip()
                 try:
                     renda_float = float(renda_valor) if renda_valor else 0.0
@@ -86,7 +105,7 @@ def check_user(email):
                     renda_float = 0.0
                 return {
                     "row": i,
-                    "data": {"email": row[0], "renda_mensal": renda_float}
+                    "data": {"email": row[indices["email"]], "renda_mensal": renda_float}
                 }
         return None
     except Exception as e:
@@ -94,55 +113,62 @@ def check_user(email):
         return None
 
 def load_user_data(email):
-    """Carrega renda e gastos do usuário diretamente da planilha."""
+    """Carrega renda e gastos do usuário com mapeamento flexível de colunas."""
     user_info = check_user(email)
     if not user_info:
         return 0.0, []
 
     renda = user_info["data"]["renda_mensal"]
-    gastos_usuario = []
 
     try:
         ws_gastos = get_gastos_worksheet()
-        # Verificação opcional dos cabeçalhos
-        headers = ws_gastos.row_values(1)
         expected = ["email", "id", "descricao", "categoria", "valor", "data", "forma_pagamento", "timestamp"]
-        missing = [h for h in expected if h not in headers]
-        if missing:
-            st.warning(f"⚠️ A aba 'gastos' pode ter formatação incorreta. Cabeçalhos ausentes: {missing}")
+        indices = mapear_indices(ws_gastos, expected)
 
-        registros = ws_gastos.get_all_records()
+        all_rows = ws_gastos.get_all_values()
+        if len(all_rows) < 2:
+            return renda, []
+
+        gastos_usuario = []
         email_clean = email.lower().strip()
-        for rec in registros:
-            if str(rec.get("email", "")).lower().strip() == email_clean:
-                valor_raw = rec.get("valor", "0")
-                if isinstance(valor_raw, str):
-                    valor_raw = valor_raw.replace("R$", "").replace(" ", "").replace(".", "").replace(",", ".").strip()
-                try:
-                    valor_float = float(valor_raw) if valor_raw else 0.0
-                except ValueError:
-                    valor_float = 0.0
 
-                gasto = {
-                    "id": rec.get("id", ""),
-                    "descricao": rec.get("descricao", ""),
-                    "categoria": rec.get("categoria", ""),
-                    "valor": valor_float,
-                    "data": rec.get("data", ""),
-                    "forma_pagamento": rec.get("forma_pagamento", ""),
-                    "timestamp": rec.get("timestamp", "")
-                }
-                gastos_usuario.append(gasto)
+        for row in all_rows[1:]:
+            if len(row) <= max(indices.values()):
+                continue  # linha incompleta
+
+            if row[indices["email"]].lower().strip() != email_clean:
+                continue
+
+            valor_raw = row[indices["valor"]]
+            valor_raw = valor_raw.replace("R$", "").replace(" ", "").replace(".", "").replace(",", ".").strip()
+            try:
+                valor_float = float(valor_raw) if valor_raw else 0.0
+            except ValueError:
+                valor_float = 0.0
+
+            gasto = {
+                "id": row[indices["id"]],
+                "descricao": row[indices["descricao"]],
+                "categoria": row[indices["categoria"]],
+                "valor": valor_float,
+                "data": row[indices["data"]],
+                "forma_pagamento": row[indices["forma_pagamento"]],
+                "timestamp": row[indices["timestamp"]]
+            }
+            gastos_usuario.append(gasto)
+
+        return renda, gastos_usuario
     except Exception as e:
         st.error(f"Erro ao carregar gastos: {str(e)}")
-
-    return renda, gastos_usuario
+        return renda, []
 
 def save_renda(email, nova_renda):
     user_info = check_user(email)
     if user_info:
         ws = get_usuarios_worksheet()
-        ws.update(f"B{user_info['row']}", [[float(nova_renda)]])
+        indices = mapear_indices(ws, ["email", "renda_mensal"])
+        # Atualiza a célula da renda na linha do usuário
+        ws.update_cell(user_info["row"], indices["renda_mensal"] + 1, float(nova_renda))
         st.session_state.dados["renda_mensal"] = nova_renda
         return True
     st.error("Usuário não encontrado.")
@@ -150,19 +176,24 @@ def save_renda(email, nova_renda):
 
 def add_gasto(email, gasto):
     try:
-        ws = get_gastos_worksheet()
+        ws_gastos = get_gastos_worksheet()
+        expected = ["email", "id", "descricao", "categoria", "valor", "data", "forma_pagamento", "timestamp"]
+        indices = mapear_indices(ws_gastos, expected)
+
+        # Prepara a nova linha na ordem correta das colunas
+        num_cols = len(ws_gastos.row_values(1))
+        nova_linha = [""] * num_cols
+        nova_linha[indices["email"]] = email
         gasto_id = f"{datetime.now().timestamp()}_{email}"
-        novaLinha = [
-            email,
-            gasto_id,
-            gasto["descricao"],
-            gasto["categoria"],
-            float(gasto["valor"]),
-            gasto["data"],
-            gasto["forma_pagamento"],
-            gasto["timestamp"]
-        ]
-        ws.append_row(novaLinha)
+        nova_linha[indices["id"]] = gasto_id
+        nova_linha[indices["descricao"]] = gasto["descricao"]
+        nova_linha[indices["categoria"]] = gasto["categoria"]
+        nova_linha[indices["valor"]] = float(gasto["valor"])
+        nova_linha[indices["data"]] = gasto["data"]
+        nova_linha[indices["forma_pagamento"]] = gasto["forma_pagamento"]
+        nova_linha[indices["timestamp"]] = gasto["timestamp"]
+
+        ws_gastos.append_row(nova_linha)
         gasto['id'] = gasto_id
         st.session_state.dados['gastos'].append(gasto)
         return gasto_id
@@ -172,24 +203,30 @@ def add_gasto(email, gasto):
 
 def delete_all_user_data(email):
     try:
+        # Deletar gastos
         ws_gastos = get_gastos_worksheet()
-        registros = ws_gastos.get_all_values()
-        if len(registros) > 1:
-            linhas = []
-            for i, linha in enumerate(registros, start=1):
-                if i == 1:
-                    continue
-                if len(linha) > 0 and linha[0].lower().strip() == email.lower().strip():
-                    linhas.append(i)
-            for row_num in sorted(linhas, reverse=True):
+        expected = ["email", "id", "descricao", "categoria", "valor", "data", "forma_pagamento", "timestamp"]
+        indices = mapear_indices(ws_gastos, expected)
+
+        all_rows = ws_gastos.get_all_values()
+        if len(all_rows) > 1:
+            linhas_para_deletar = []
+            email_clean = email.lower().strip()
+            for i, row in enumerate(all_rows[1:], start=2):
+                if len(row) > indices["email"] and row[indices["email"]].lower().strip() == email_clean:
+                    linhas_para_deletar.append(i)
+            for row_num in sorted(linhas_para_deletar, reverse=True):
                 ws_gastos.delete_rows(row_num)
 
+        # Zerar renda
         user_info = check_user(email)
         if user_info:
             ws_usuarios = get_usuarios_worksheet()
-            ws_usuarios.update(f"B{user_info['row']}", [[0]])
+            indices_user = mapear_indices(ws_usuarios, ["email", "renda_mensal"])
+            ws_usuarios.update_cell(user_info["row"], indices_user["renda_mensal"] + 1, 0)
             st.session_state.dados['renda_mensal'] = 0
             st.session_state.dados['gastos'] = []
+
         return True
     except Exception as e:
         st.error(f"Erro ao limpar dados: {str(e)}")
@@ -378,7 +415,7 @@ with col_logo:
 with col_reload:
     st.markdown("<br><br>", unsafe_allow_html=True)
     if st.button("🔄 Recarregar", use_container_width=True):
-        st.rerun()  # Rerun já recarrega os dados (estamos carregando sempre)
+        st.rerun()
 with col_logout:
     st.markdown("<br><br>", unsafe_allow_html=True)
     if st.button("🚪 Sair", use_container_width=True):
@@ -431,7 +468,6 @@ with tab1:
         df = pd.DataFrame(gastos)
         df['data'] = pd.to_datetime(df['data'])
 
-        # Gráficos (igual ao original, mantive apenas a estrutura básica)
         col_left, col_right = st.columns(2)
         with col_left:
             st.markdown('<div class="chart-container">', unsafe_allow_html=True)
@@ -458,8 +494,8 @@ with tab1:
             st.plotly_chart(fig, use_container_width=True, config={'displayModeBar': False})
             st.markdown('</div>', unsafe_allow_html=True)
 
-        # Demais gráficos omitidos por brevidade, mas podem ser reinseridos aqui.
-        # (Mantive apenas o essencial para não estender demais, mas o código original pode ser colado na íntegra)
+        # Demais gráficos (barras, gauge, radar, etc.) podem ser reinseridos aqui
+        # Por brevidade, mantive apenas os essenciais, mas você pode colar o restante do código original.
 
 # ==================== ABA 2: ADICIONAR RENDA ====================
 with tab2:
