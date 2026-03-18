@@ -16,23 +16,15 @@ st.set_page_config(
 )
 
 # -------------------- GOOGLE SHEETS INTEGRAÇÃO --------------------
-# Carrega as credenciais do secrets do Streamlit
-# No Streamlit Cloud, adicione no secrets:
-# [gcp_service_account]
-# type = "service_account"
-# project_id = "..."
-# private_key_id = "..."
-# private_key = "..."
-# client_email = "..."
-# client_id = "..."
-# auth_uri = "..."
-# token_uri = "..."
-# etc.
 def get_gspread_client():
     """Retorna cliente autenticado do gspread usando service account."""
     creds_dict = st.secrets["gcp_service_account"]
-    # Escopos necessários
-    scope = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
+    # Escopos necessários - adicionado spreadsheet
+    scope = [
+        "https://spreadsheets.google.com/feeds",
+        "https://www.googleapis.com/auth/drive",
+        "https://www.googleapis.com/auth/spreadsheets"
+    ]
     creds = Credentials.from_service_account_info(creds_dict, scopes=scope)
     client = gspread.authorize(creds)
     return client
@@ -40,54 +32,136 @@ def get_gspread_client():
 # Use st.cache_resource para manter o cliente em cache (evita relogin a cada rerun)
 @st.cache_resource
 def get_spreadsheet():
-    """Abre a planilha principal (substitua pela sua URL ou ID)."""
+    """Abre a planilha principal."""
     client = get_gspread_client()
-    # Coloque aqui o ID da sua planilha (extraído da URL)
     SPREADSHEET_ID = "1b7QQ2n59e_GCijiWmTrKBeq7-FnXgVttx9l96uuIs0I"
     return client.open_by_key(SPREADSHEET_ID)
 
-# Funções auxiliares para acessar as abas
+# Funções auxiliares para acessar as abas com tratamento de erro
 def get_usuarios_worksheet():
-    return get_spreadsheet().worksheet("usuarios")
+    """Retorna a worksheet de usuários com verificação."""
+    try:
+        spreadsheet = get_spreadsheet()
+        # Listar todas as abas disponíveis
+        all_worksheets = [ws.title for ws in spreadsheet.worksheets()]
+        
+        # Verificar se a aba existe
+        if "usuarios" not in all_worksheets:
+            st.error(f"❌ Aba 'usuarios' não encontrada! Abas disponíveis: {all_worksheets}")
+            st.stop()
+        
+        return spreadsheet.worksheet("usuarios")
+    except Exception as e:
+        st.error(f"Erro ao acessar aba 'usuarios': {str(e)}")
+        st.stop()
 
 def get_gastos_worksheet():
-    return get_spreadsheet().worksheet("gastos")
+    """Retorna a worksheet de gastos com verificação."""
+    try:
+        spreadsheet = get_spreadsheet()
+        # Listar todas as abas disponíveis
+        all_worksheets = [ws.title for ws in spreadsheet.worksheets()]
+        
+        # Verificar se a aba existe
+        if "gastos" not in all_worksheets:
+            st.error(f"❌ Aba 'gastos' não encontrada! Abas disponíveis: {all_worksheets}")
+            st.stop()
+        
+        return spreadsheet.worksheet("gastos")
+    except Exception as e:
+        st.error(f"Erro ao acessar aba 'gastos': {str(e)}")
+        st.stop()
 
 def check_user(email):
-    """Verifica se o email existe na planilha de usuários. Retorna a linha (dict) ou None."""
-    ws = get_usuarios_worksheet()
-    records = ws.get_all_records()
-    for idx, record in enumerate(records, start=2):  # linha 2 porque linha 1 é cabeçalho
-        if record["email"] == email:
-            # retorna o registro e o número da linha
-            return {"row": idx, "data": record}
-    return None
+    """Verifica se o email existe na planilha de usuários."""
+    try:
+        ws = get_usuarios_worksheet()
+        # Pegar todos os registros incluindo cabeçalho
+        all_rows = ws.get_all_values()
+        
+        if len(all_rows) < 2:
+            st.warning("Planilha de usuários está vazia")
+            return None
+            
+        # Cabeçalhos
+        headers = all_rows[0]
+        
+        # Verificar cabeçalhos
+        expected_headers = ["email", "renda_mensal"]
+        for i, expected in enumerate(expected_headers):
+            if i >= len(headers) or headers[i] != expected:
+                st.error(f"Cabeçalho incorreto na coluna {i+1}. Esperado: '{expected}', Encontrado: '{headers[i] if i < len(headers) else 'vazio'}'")
+                return None
+        
+        # Verificar registros
+        for i, row in enumerate(all_rows[1:], start=2):
+            if len(row) >= 1 and row[0] == email:
+                # Converte renda para float, tratando valores vazios ou formatados
+                renda_valor = row[1] if len(row) > 1 and row[1].strip() else "0"
+                
+                # Limpar formatação
+                renda_valor = renda_valor.replace("R$", "").replace(" ", "").replace(".", "").replace(",", ".").strip()
+                
+                try:
+                    renda_float = float(renda_valor) if renda_valor else 0.0
+                except ValueError:
+                    renda_float = 0.0
+                    st.warning(f"Valor de renda inválido para {email}. Usando R$ 0,00")
+                
+                return {
+                    "row": i,
+                    "data": {
+                        "email": row[0],
+                        "renda_mensal": renda_float
+                    }
+                }
+        return None
+    except Exception as e:
+        st.error(f"Erro ao verificar usuário: {str(e)}")
+        return None
 
 def load_user_data(email):
     """Carrega renda e gastos do usuário."""
     # Busca renda na planilha usuarios
     user_info = check_user(email)
     if not user_info:
-        return None, []   # usuário não autorizado
-    renda = float(user_info["data"]["renda_mensal"])
+        return 0.0, []   # usuário não autorizado ou não encontrado
+    
+    renda = user_info["data"]["renda_mensal"]
 
     # Busca gastos na planilha gastos filtrando por email
-    ws_gastos = get_gastos_worksheet()
-    todos_gastos = ws_gastos.get_all_records()
-    gastos_usuario = []
-    for record in todos_gastos:
-        if record["email"] == email:
-            # Converte para o formato esperado pelo app
-            gasto = {
-                "id": record["id"],
-                "descricao": record["descricao"],
-                "categoria": record["categoria"],
-                "valor": float(record["valor"]),
-                "data": record["data"],  # já deve vir no formato YYYY-MM-DD
-                "forma_pagamento": record["forma_pagamento"],
-                "timestamp": record["timestamp"]
-            }
-            gastos_usuario.append(gasto)
+    try:
+        ws_gastos = get_gastos_worksheet()
+        todos_gastos = ws_gastos.get_all_records()
+        
+        gastos_usuario = []
+        for record in todos_gastos:
+            # Usar .get() para evitar KeyError
+            if record.get("email") == email:
+                # Tratar valor do gasto
+                valor_raw = record.get("valor", "0")
+                if isinstance(valor_raw, str):
+                    valor_raw = valor_raw.replace("R$", "").replace(" ", "").replace(".", "").replace(",", ".").strip()
+                
+                try:
+                    valor_float = float(valor_raw) if valor_raw else 0.0
+                except ValueError:
+                    valor_float = 0.0
+                
+                gasto = {
+                    "id": record.get("id", ""),
+                    "descricao": record.get("descricao", ""),
+                    "categoria": record.get("categoria", ""),
+                    "valor": valor_float,
+                    "data": record.get("data", ""),
+                    "forma_pagamento": record.get("forma_pagamento", ""),
+                    "timestamp": record.get("timestamp", "")
+                }
+                gastos_usuario.append(gasto)
+    except Exception as e:
+        st.error(f"Erro ao carregar gastos: {str(e)}")
+        gastos_usuario = []
+    
     return renda, gastos_usuario
 
 def save_renda(email, nova_renda):
@@ -95,54 +169,91 @@ def save_renda(email, nova_renda):
     user_info = check_user(email)
     if user_info:
         ws = get_usuarios_worksheet()
-        ws.update(f"B{user_info['row']}", nova_renda)  # coluna B = renda_mensal
+        # Garantir que o valor seja salvo como número
+        ws.update(f"B{user_info['row']}", [[float(nova_renda)]])  # coluna B = renda_mensal
+        return True
     else:
-        # Se não existir, talvez criar? Mas segundo requisito, emails são adicionados manualmente.
         st.error("Usuário não encontrado na base autorizada.")
         return False
-    return True
 
 def add_gasto(email, gasto):
     """Adiciona um novo gasto na planilha gastos e retorna o ID gerado."""
-    ws = get_gastos_worksheet()
-    # Gera um ID simples (timestamp + email)
-    gasto_id = f"{datetime.now().timestamp()}_{email}"
-    novaLinha = [
-        email,
-        gasto_id,
-        gasto["descricao"],
-        gasto["categoria"],
-        gasto["valor"],
-        gasto["data"],        # YYYY-MM-DD
-        gasto["forma_pagamento"],
-        gasto["timestamp"]
-    ]
-    ws.append_row(novaLinha)
-    return gasto_id
+    try:
+        ws = get_gastos_worksheet()
+        # Gera um ID simples (timestamp + email)
+        gasto_id = f"{datetime.now().timestamp()}_{email}"
+        novaLinha = [
+            email,
+            gasto_id,
+            gasto["descricao"],
+            gasto["categoria"],
+            float(gasto["valor"]),  # Garantir que é número
+            gasto["data"],           # YYYY-MM-DD
+            gasto["forma_pagamento"],
+            gasto["timestamp"]
+        ]
+        ws.append_row(novaLinha)
+        return gasto_id
+    except Exception as e:
+        st.error(f"Erro ao adicionar gasto: {str(e)}")
+        return None
 
 def delete_all_user_data(email):
     """Remove todos os gastos do usuário e zera a renda."""
-    # 1. Deletar gastos
-    ws_gastos = get_gastos_worksheet()
-    registros = ws_gastos.get_all_values()
-    if len(registros) <= 1:
-        return  # só cabeçalho
-    # Encontrar linhas onde a coluna A (email) corresponde
-    linhas_para_deletar = []
-    for i, linha in enumerate(registros, start=1):
-        if i == 1:
-            continue  # cabeçalho
-        if linha[0] == email:  # coluna email
-            linhas_para_deletar.append(i)
-    # Deletar de trás para frente para não afetar os índices
-    for row_num in sorted(linhas_para_deletar, reverse=True):
-        ws_gastos.delete_rows(row_num)
+    try:
+        # 1. Deletar gastos
+        ws_gastos = get_gastos_worksheet()
+        registros = ws_gastos.get_all_values()
+        if len(registros) > 1:
+            # Encontrar linhas onde a coluna A (email) corresponde
+            linhas_para_deletar = []
+            for i, linha in enumerate(registros, start=1):
+                if i == 1:
+                    continue  # cabeçalho
+                if len(linha) > 0 and linha[0] == email:  # coluna email
+                    linhas_para_deletar.append(i)
+            
+            # Deletar de trás para frente para não afetar os índices
+            for row_num in sorted(linhas_para_deletar, reverse=True):
+                ws_gastos.delete_rows(row_num)
 
-    # 2. Zerar renda na planilha usuarios
-    user_info = check_user(email)
-    if user_info:
-        ws_usuarios = get_usuarios_worksheet()
-        ws_usuarios.update(f"B{user_info['row']}", 0)
+        # 2. Zerar renda na planilha usuarios
+        user_info = check_user(email)
+        if user_info:
+            ws_usuarios = get_usuarios_worksheet()
+            ws_usuarios.update(f"B{user_info['row']}", [[0]])
+        
+        return True
+    except Exception as e:
+        st.error(f"Erro ao limpar dados: {str(e)}")
+        return False
+
+# -------------------- DIAGNÓSTICO INICIAL --------------------
+try:
+    # Testar conexão com a planilha
+    sheet = get_spreadsheet()
+    st.success(f"✅ Conectado à planilha: {sheet.title}")
+    
+    # Listar abas disponíveis
+    worksheets = sheet.worksheets()
+    ws_titles = [ws.title for ws in worksheets]
+    st.info(f"📊 Abas encontradas: {ws_titles}")
+    
+    # Verificar se as abas necessárias existem
+    if "usuarios" not in ws_titles:
+        st.error("❌ Aba 'usuarios' não encontrada! Crie uma aba com este nome exato.")
+        st.stop()
+    if "gastos" not in ws_titles:
+        st.error("❌ Aba 'gastos' não encontrada! Crie uma aba com este nome exato.")
+        st.stop()
+        
+except Exception as e:
+    st.error(f"❌ Erro de conexão com a planilha: {str(e)}")
+    st.info("Verifique se:")
+    st.info("1. O ID da planilha está correto")
+    st.info("2. A service account tem acesso à planilha")
+    st.info("3. As credenciais no Secrets estão corretas")
+    st.stop()
 
 # -------------------- CONTROLE DE AUTENTICAÇÃO --------------------
 if "authenticated" not in st.session_state:
@@ -159,32 +270,35 @@ if not st.session_state.authenticated:
         <div style="background: linear-gradient(145deg, #1e293b, #0f172a); padding: 3rem; border-radius: 30px; border: 1px solid #8b5cf6; width: 100%; max-width: 400px;">
             <h2 style="color: white; text-align: center; margin-bottom: 2rem;">🔐 Acesso Restrito</h2>
     """, unsafe_allow_html=True)
+    
     email = st.text_input("Seu e-mail cadastrado", placeholder="email@exemplo.com")
+    
     if st.button("Entrar", use_container_width=True):
         if email:
-            user = check_user(email)
-            if user:
-                st.session_state.authenticated = True
-                st.session_state.email = email
-                # Carrega os dados do usuário
-                renda, gastos = load_user_data(email)
-                st.session_state.dados["renda_mensal"] = renda
-                st.session_state.dados["gastos"] = gastos
-                st.success("Login realizado com sucesso!")
-                st.experimental_rerun()
-            else:
-                st.error("E-mail não autorizado. Entre em contato para liberar acesso.")
+            with st.spinner("Verificando credenciais..."):
+                user = check_user(email)
+                if user:
+                    st.session_state.authenticated = True
+                    st.session_state.email = email
+                    # Carrega os dados do usuário
+                    renda, gastos = load_user_data(email)
+                    st.session_state.dados["renda_mensal"] = renda
+                    st.session_state.dados["gastos"] = gastos
+                    st.success("Login realizado com sucesso!")
+                    st.experimental_rerun()
+                else:
+                    st.error("❌ E-mail não autorizado. Entre em contato para liberar acesso.")
         else:
-            st.warning("Digite seu e-mail.")
+            st.warning("⚠️ Digite seu e-mail.")
+    
     st.markdown("</div></div>", unsafe_allow_html=True)
-    st.stop()  # Para a execução aqui, não mostra o app
+    st.stop()
 
 # -------------------- SE AUTENTICADO, MOSTRA O APP --------------------
 
-# ==================== CSS (igual ao anterior) ====================
+# ==================== CSS (mantido igual ao original) ====================
 st.markdown("""
 <style>
-    /* todo o seu CSS existente - mantido igual */
     @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap');
     * { font-family: 'Inter', sans-serif; }
     .stApp { background: linear-gradient(135deg, #0f172a 0%, #1e293b 50%, #0f172a 100%); color: #e2e8f0; }
@@ -249,7 +363,7 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-# ==================== FUNÇÕES AUXILIARES (mesmas) ====================
+# ==================== FUNÇÕES AUXILIARES ====================
 def notificar_sucesso(mensagem, detalhe=None):
     if detalhe:
         st.toast(f"✓ {mensagem}", icon="✅")
@@ -290,7 +404,7 @@ with col_logo:
     </div>
     """, unsafe_allow_html=True)
 with col_logout:
-    st.markdown("<br><br>", unsafe_allow_html=True)  # espaçamento
+    st.markdown("<br><br>", unsafe_allow_html=True)
     if st.button("🚪 Sair", use_container_width=True):
         st.session_state.authenticated = False
         st.session_state.email = None
@@ -300,7 +414,7 @@ with col_logout:
 # ==================== MENU SUPERIOR COM ABAS ====================
 tab1, tab2, tab3, tab4 = st.tabs(["📊 Visão Geral", "💰 Adicionar Renda", "💳 Adicionar Gasto", "📋 Relatório Detalhado"])
 
-# ==================== ABA 1: VISÃO GERAL (quase igual, usa st.session_state.dados) ====================
+# ==================== ABA 1: VISÃO GERAL ====================
 with tab1:
     renda = st.session_state.dados['renda_mensal']
     gastos = st.session_state.dados['gastos']
@@ -476,7 +590,7 @@ with tab1:
             st.plotly_chart(fig_gauge, use_container_width=True, config={'displayModeBar': False})
             st.markdown('</div>', unsafe_allow_html=True)
 
-        # Radar, forma de pagamento (mantido igual)
+        # Radar
         st.markdown('<div class="chart-container">', unsafe_allow_html=True)
         st.subheader("🕸️ Análise de Padrões de Gasto (% da Renda)")
         categorias_radar = ['Alimentação', 'Transporte', 'Lazer', 'Moradia', 'Saúde', 'Educação', 'Outros']
@@ -593,7 +707,7 @@ with tab1:
             st.info("Informação de forma de pagamento não disponível nos dados.")
         st.markdown('</div>', unsafe_allow_html=True)
 
-# ==================== ABA 2: ADICIONAR RENDA (com update na planilha) ====================
+# ==================== ABA 2: ADICIONAR RENDA ====================
 with tab2:
     st.markdown('<div class="form-container animate-in">', unsafe_allow_html=True)
     st.subheader("💰 Cadastro de Renda Mensal")
@@ -619,27 +733,16 @@ with tab2:
         )
         if st.button("💾 Salvar Renda", use_container_width=True, type="primary"):
             if renda_input >= 0:
-                # Atualiza na planilha
-                if save_renda(st.session_state.email, renda_input):
-                    st.session_state.dados['renda_mensal'] = renda_input
-                    notificar_sucesso(
-                        f"Renda de R$ {renda_input:,.2f} registrada",
-                        f"Fonte: {fonte_renda} | Saldo atualizado"
-                    )
-                    st.markdown(f"""
-                    <div style="background: rgba(16, 185, 129, 0.1); border: 1px solid #10b981; border-radius: 12px; padding: 1rem; margin-top: 1rem; animation: fadeIn 0.5s;">
-                        <div style="display: flex; align-items: center; gap: 0.75rem;">
-                            <span style="font-size: 1.5rem;">✅</span>
-                            <div>
-                                <p style="color: #10b981; font-weight: 600; margin: 0;">Renda salva com sucesso</p>
-                                <p style="color: #94a3b8; font-size: 0.875rem; margin: 0.25rem 0 0 0;">R$ {renda_input:,.2f} • {fonte_renda}</p>
-                            </div>
-                        </div>
-                    </div>
-                    """, unsafe_allow_html=True)
-                    st.session_state.ultima_acao = "renda_salva"
-                else:
-                    notificar_erro("Erro ao salvar renda na planilha", "Tente novamente mais tarde.")
+                with st.spinner("Salvando renda..."):
+                    if save_renda(st.session_state.email, renda_input):
+                        st.session_state.dados['renda_mensal'] = renda_input
+                        notificar_sucesso(
+                            f"Renda de R$ {renda_input:,.2f} registrada",
+                            f"Fonte: {fonte_renda} | Saldo atualizado"
+                        )
+                        st.session_state.ultima_acao = "renda_salva"
+                    else:
+                        notificar_erro("Erro ao salvar renda na planilha", "Tente novamente mais tarde.")
             else:
                 notificar_erro("Valor da renda deve ser maior ou igual a zero", "Digite um valor válido")
     with col2:
@@ -667,7 +770,7 @@ with tab2:
             """, unsafe_allow_html=True)
     st.markdown('</div>', unsafe_allow_html=True)
 
-# ==================== ABA 3: ADICIONAR GASTO (com inserção na planilha) ====================
+# ==================== ABA 3: ADICIONAR GASTO ====================
 with tab3:
     st.markdown('<div class="form-container animate-in">', unsafe_allow_html=True)
     st.subheader("💸 Registro de Novo Gasto")
@@ -752,37 +855,27 @@ with tab3:
         limpar_click = st.button("🗑️ Limpar", use_container_width=True)
     if salvar_click:
         if descricao and valor_gasto > 0:
-            novo_gasto = {
-                'descricao': descricao,
-                'categoria': cat_selecionada,
-                'valor': valor_gasto,
-                'data': data_gasto.strftime('%Y-%m-%d'),
-                'forma_pagamento': forma_pagamento,
-                'timestamp': datetime.now().isoformat()
-            }
-            # Salvar na planilha
-            gasto_id = add_gasto(st.session_state.email, novo_gasto)
-            if gasto_id:
-                # Adicionar id ao dicionário e incluir na sessão
-                novo_gasto['id'] = gasto_id
-                st.session_state.dados['gastos'].append(novo_gasto)
-                notificar_sucesso(
-                    f"Gasto de R$ {valor_gasto:,.2f} registrado",
-                    f"{cat_selecionada} • {forma_pagamento}"
-                )
-                st.markdown(f"""
-                <div style="background: rgba(16, 185, 129, 0.1); border: 1px solid #10b981; border-radius: 12px; padding: 1rem; margin-top: 1rem; animation: fadeIn 0.5s;">
-                    <div style="display: flex; align-items: center; gap: 0.75rem;">
-                        <span style="font-size: 1.5rem;">✅</span>
-                        <div>
-                            <p style="color: #10b981; font-weight: 600; margin: 0;">Gasto registrado com sucesso</p>
-                            <p style="color: #94a3b8; font-size: 0.875rem; margin: 0.25rem 0 0 0;">{descricao[:30]}{'...' if len(descricao) > 30 else ''} • R$ {valor_gasto:,.2f}</p>
-                        </div>
-                    </div>
-                </div>
-                """, unsafe_allow_html=True)
-            else:
-                notificar_erro("Erro ao salvar gasto na planilha", "Tente novamente mais tarde.")
+            with st.spinner("Salvando gasto..."):
+                novo_gasto = {
+                    'descricao': descricao,
+                    'categoria': cat_selecionada,
+                    'valor': valor_gasto,
+                    'data': data_gasto.strftime('%Y-%m-%d'),
+                    'forma_pagamento': forma_pagamento,
+                    'timestamp': datetime.now().isoformat()
+                }
+                # Salvar na planilha
+                gasto_id = add_gasto(st.session_state.email, novo_gasto)
+                if gasto_id:
+                    # Adicionar id ao dicionário e incluir na sessão
+                    novo_gasto['id'] = gasto_id
+                    st.session_state.dados['gastos'].append(novo_gasto)
+                    notificar_sucesso(
+                        f"Gasto de R$ {valor_gasto:,.2f} registrado",
+                        f"{cat_selecionada} • {forma_pagamento}"
+                    )
+                else:
+                    notificar_erro("Erro ao salvar gasto na planilha", "Tente novamente mais tarde.")
         else:
             notificar_erro("Preencha todos os campos obrigatórios", "Descrição e valor são necessários")
     if limpar_click:
@@ -790,7 +883,7 @@ with tab3:
         st.experimental_rerun()
     st.markdown('</div>', unsafe_allow_html=True)
 
-# ==================== ABA 4: RELATÓRIO DETALHADO (com limpeza de dados) ====================
+# ==================== ABA 4: RELATÓRIO DETALHADO ====================
 with tab4:
     renda = st.session_state.dados['renda_mensal']
     gastos = st.session_state.dados['gastos']
@@ -941,11 +1034,13 @@ with tab4:
             col_conf1, col_conf2 = st.columns(2)
             with col_conf1:
                 if st.button("✅ Sim, limpar tudo", use_container_width=True):
-                    # Deletar dados da planilha
-                    delete_all_user_data(st.session_state.email)
-                    # Atualizar sessão
-                    st.session_state.dados = {'renda_mensal': 0, 'gastos': []}
-                    notificar_sucesso("Todos os dados foram removidos", "Sistema resetado com sucesso")
+                    with st.spinner("Limpando dados..."):
+                        if delete_all_user_data(st.session_state.email):
+                            # Atualizar sessão
+                            st.session_state.dados = {'renda_mensal': 0, 'gastos': []}
+                            notificar_sucesso("Todos os dados foram removidos", "Sistema resetado com sucesso")
+                        else:
+                            notificar_erro("Erro ao limpar dados", "Tente novamente mais tarde")
                     st.session_state.confirmar_limpeza = False
                     time.sleep(1)
                     st.experimental_rerun()
