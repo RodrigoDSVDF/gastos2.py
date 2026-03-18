@@ -47,7 +47,7 @@ def get_usuarios_worksheet():
         
         # Verificar se a aba existe
         if "usuarios" not in all_worksheets:
-            st.error(f"❌ Aba 'usuarios' não encontrada! Abas disponíveis: {all_worksheets}")
+            st.error(f"❌ Aba 'usuarios' não encontrada! Verifique o nome da aba.")
             st.stop()
         
         return spreadsheet.worksheet("usuarios")
@@ -64,7 +64,7 @@ def get_gastos_worksheet():
         
         # Verificar se a aba existe
         if "gastos" not in all_worksheets:
-            st.error(f"❌ Aba 'gastos' não encontrada! Abas disponíveis: {all_worksheets}")
+            st.error(f"❌ Aba 'gastos' não encontrada! Verifique o nome da aba.")
             st.stop()
         
         return spreadsheet.worksheet("gastos")
@@ -80,7 +80,6 @@ def check_user(email):
         all_rows = ws.get_all_values()
         
         if len(all_rows) < 2:
-            st.warning("Planilha de usuários está vazia")
             return None
             
         # Cabeçalhos
@@ -90,7 +89,7 @@ def check_user(email):
         expected_headers = ["email", "renda_mensal"]
         for i, expected in enumerate(expected_headers):
             if i >= len(headers) or headers[i] != expected:
-                st.error(f"Cabeçalho incorreto na coluna {i+1}. Esperado: '{expected}', Encontrado: '{headers[i] if i < len(headers) else 'vazio'}'")
+                st.error(f"Cabeçalho incorreto na coluna {i+1}. Esperado: '{expected}'")
                 return None
         
         # Verificar registros
@@ -106,7 +105,6 @@ def check_user(email):
                     renda_float = float(renda_valor) if renda_valor else 0.0
                 except ValueError:
                     renda_float = 0.0
-                    st.warning(f"Valor de renda inválido para {email}. Usando R$ 0,00")
                 
                 return {
                     "row": i,
@@ -228,23 +226,20 @@ def delete_all_user_data(email):
         st.error(f"Erro ao limpar dados: {str(e)}")
         return False
 
-# -------------------- DIAGNÓSTICO INICIAL --------------------
+# -------------------- VERIFICAÇÃO INICIAL (SEM AVISOS) --------------------
 try:
-    # Testar conexão com a planilha
+    # Testar conexão com a planilha (sem exibir mensagens)
     sheet = get_spreadsheet()
-    st.success(f"✅ Conectado à planilha: {sheet.title}")
     
-    # Listar abas disponíveis
+    # Verificar se as abas necessárias existem (sem exibir listagem)
     worksheets = sheet.worksheets()
     ws_titles = [ws.title for ws in worksheets]
-    st.info(f"📊 Abas encontradas: {ws_titles}")
     
-    # Verificar se as abas necessárias existem
     if "usuarios" not in ws_titles:
-        st.error("❌ Aba 'usuarios' não encontrada! Crie uma aba com este nome exato.")
+        st.error("❌ Aba 'usuarios' não encontrada! Verifique o nome da aba.")
         st.stop()
     if "gastos" not in ws_titles:
-        st.error("❌ Aba 'gastos' não encontrada! Crie uma aba com este nome exato.")
+        st.error("❌ Aba 'gastos' não encontrada! Verifique o nome da aba.")
         st.stop()
         
 except Exception as e:
@@ -285,7 +280,7 @@ if not st.session_state.authenticated:
                     st.session_state.dados["renda_mensal"] = renda
                     st.session_state.dados["gastos"] = gastos
                     st.success("Login realizado com sucesso!")
-                    st.rerun()  # ALTERADO: experimental_rerun -> rerun
+                    st.rerun()
                 else:
                     st.error("❌ E-mail não autorizado. Entre em contato para liberar acesso.")
         else:
@@ -409,7 +404,7 @@ with col_logout:
         st.session_state.authenticated = False
         st.session_state.email = None
         st.session_state.dados = {"renda_mensal": 0, "gastos": []}
-        st.rerun()  # ALTERADO: experimental_rerun -> rerun
+        st.rerun()
 
 # ==================== MENU SUPERIOR COM ABAS ====================
 tab1, tab2, tab3, tab4 = st.tabs(["📊 Visão Geral", "💰 Adicionar Renda", "💳 Adicionar Gasto", "📋 Relatório Detalhado"])
@@ -880,7 +875,7 @@ with tab3:
             notificar_erro("Preencha todos os campos obrigatórios", "Descrição e valor são necessários")
     if limpar_click:
         notificar_info("Formulário limpo")
-        st.rerun()  # ALTERADO: experimental_rerun -> rerun
+        st.rerun()
     st.markdown('</div>', unsafe_allow_html=True)
 
 # ==================== ABA 4: RELATÓRIO DETALHADO ====================
@@ -1043,12 +1038,12 @@ with tab4:
                             notificar_erro("Erro ao limpar dados", "Tente novamente mais tarde")
                     st.session_state.confirmar_limpeza = False
                     time.sleep(1)
-                    st.rerun()  # ALTERADO: experimental_rerun -> rerun
+                    st.rerun()
             with col_conf2:
                 if st.button("❌ Cancelar", use_container_width=True):
                     st.session_state.confirmar_limpeza = False
                     notificar_info("Operação cancelada")
-                    st.rerun()  # ALTERADO: experimental_rerun -> rerun
+                    st.rerun()
     else:
         st.info("ℹ️ Nenhum gasto registrado ainda. Adicione gastos para gerar o relatório completo.")
     st.markdown('</div>', unsafe_allow_html=True)
